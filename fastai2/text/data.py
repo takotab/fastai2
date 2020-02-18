@@ -88,6 +88,11 @@ class LMDataLoader(TfmdDL):
         txt = self.chunks[st : st+sl+1]
         return LMTensorText(txt[:-1]),txt[1:]
 
+    @delegates(TfmdDL.new)
+    def new(self, dataset=None, seq_len=72, **kwargs):
+        lens = self.lens.coll if dataset is None else None
+        return super().new(dataset=dataset, lens=lens, seq_len=seq_len, **kwargs)
+
 # Cell
 @patch
 def truncate(self:TitledStr, n):
@@ -131,7 +136,7 @@ def pad_input_chunk(samples, pad_idx=1, pad_first=True, seq_len=72):
         l = max_len - x.shape[0]
         pad_chunk = x.new_zeros((l//seq_len) * seq_len) + pad_idx
         pad_res   = x.new_zeros(l % seq_len) + pad_idx
-        x1 = torch.cat([pad_chunk, x, pad_res]) if pad_first else torch.cat([pad_res, x, pad_chunk])
+        x1 = torch.cat([pad_chunk, x, pad_res]) if pad_first else torch.cat([x, pad_res, pad_chunk])
         return retain_type(x1, x)
     return [(_f(s[0]), *s[1:]) for s in samples]
 
@@ -166,6 +171,11 @@ class SortedDL(TfmdDL):
         sort_idx = np.concatenate(np.random.permutation(batches[1:-1])) if len(batches) > 2 else np.array([],dtype=np.int)
         sort_idx = np.concatenate((batches[0], sort_idx) if len(batches)==1 else (batches[0], sort_idx, batches[-1]))
         return iter(sort_idx)
+
+    @delegates(TfmdDL.new)
+    def new(self, dataset=None, **kwargs):
+        res = self.res if dataset is None else None
+        return super().new(dataset=dataset, res=res, **kwargs)
 
 # Cell
 class TextBlock(TransformBlock):

@@ -13,6 +13,7 @@ import wandb
 # Cell
 class WandbCallback(Callback):
     "Saves model topology, losses & metrics"
+    run_after=FetchPreds
     toward_end = True
     # Record if watch has been called previously (even in another instance)
     _wandb_watch_called = False
@@ -42,10 +43,9 @@ class WandbCallback(Callback):
             wandbRandom = random.Random(self.seed)  # For repeatability
             self.n_preds = min(self.n_preds, len(self.dls.valid_ds))
             idxs = wandbRandom.sample(range(len(self.dls.valid_ds)), self.n_preds)
-
-            items = [self.dls.valid_ds.items[i] for i in idxs]
-            test_tls = [tl._new(items, split_idx=1) for tl in self.dls.valid_ds.tls]
-            self.valid_dl = self.dls.valid_dl.new(Datasets(tls=test_tls), bs=self.n_preds)
+            test_items = [self.dls.valid_ds.items[i] for i in idxs]
+            self.valid_dl = self.dls.test_dl(test_items)
+            self.learn.add_cb(FetchPreds(dl=self.valid_dl, with_input=True, with_decoded=True))
 
     def after_batch(self):
         "Log hyper-parameters and training loss"
@@ -62,16 +62,15 @@ class WandbCallback(Callback):
         wandb.log({'epoch': self._wandb_epoch}, step=self._wandb_step)
         # Log sample predictions
         if self.log_preds:
-            b = self.valid_dl.one_batch()
-            self.learn.one_batch(0, b)
-            preds = getattr(self.loss_func, 'activation', noop)(self.pred)
-            out = getattr(self.loss_func, 'decodes', noop)(preds)
+            inp,preds,targs,out = self.learn.fetch_preds.preds
+            b = tuplify(inp) + tuplify(targs)
             x,y,its,outs = self.valid_dl.show_results(b, out, show=False, max_n=self.n_preds)
-            wandb.log({"Prediction Samples": wandb_process(x, y, its, outs)}, step=self._wandb_step)
+            wandb.log(wandb_process(x, y, its, outs), step=self._wandb_step)
         wandb.log({n:s for n,s in zip(self.recorder.metric_names, self.recorder.log) if n not in ['train_loss', 'epoch', 'time']}, step=self._wandb_step)
 
     def after_fit(self):
         self.run = True
+        if self.log_preds: self.remove_cb(self.learn.fetch_preds)
         wandb.log({}) #To trigger one last synch
 
 # Cell
@@ -96,16 +95,16 @@ def wandb_process(x:TensorImage, y, samples, outs):
             ax = t.show(ctx=ax)
             res.append(wandb.Image(fig, caption=capt))
             plt.close(fig)
-    return res
+    return {"Prediction Samples": res}
 
 # Cell
 @typedispatch
 def wandb_process(x:TensorImage, y:(TensorCategory,TensorMultiCategory), samples, outs):
-    return [wandb.Image(s[0].permute(1,2,0), caption=f'Ground Truth: {s[1]}\nPrediction: {o[0]}')
-            for s,o in zip(samples,outs)]
+    return {"Prediction Samples": [wandb.Image(s[0].permute(1,2,0), caption=f'Ground Truth: {s[1]}\nPrediction: {o[0]}')
+            for s,o in zip(samples,outs)]}
 
 # Cell
 @typedispatch
 def wandb_process(x:TensorText, y:(TensorCategory,TensorMultiCategory), samples, outs):
     data = [[s[0], s[1], o[0]] for s,o in zip(samples,outs)]
-    return wandb.Table(data=data, columns=["Text", "Target", "Prediction"])
+    return {"Prediction Samples": wandb.Table(data=data, columns=["Text", "Target", "Prediction"])}
